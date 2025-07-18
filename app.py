@@ -49,6 +49,19 @@ def initialize_database():
         )
     ''')
     
+    # professor_files 테이블 생성 (평가기준, 모범답안 등)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS professor_files (
+            file_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            upload_time DATETIME NOT NULL,
+            FOREIGN KEY (admin_id) REFERENCES professors (admin_id)
+        )
+    ''')
+    
     # 초기 데이터 확인 및 삽입
     cursor.execute('SELECT COUNT(*) FROM students')
     if cursor.fetchone()[0] == 0:
@@ -189,6 +202,87 @@ def get_all_submissions():
     
     return results
 
+def save_professor_file(admin_id, uploaded_file, file_type):
+    """교수 파일(평가기준, 모범답안)을 저장하고 데이터베이스에 기록합니다."""
+    # storage 폴더가 없으면 생성
+    if not os.path.exists('storage'):
+        os.makedirs('storage')
+    
+    # professor_files 폴더 생성
+    prof_storage = os.path.join('storage', 'professor_files')
+    if not os.path.exists(prof_storage):
+        os.makedirs(prof_storage)
+    
+    # 파일명 생성: {file_type}_{admin_id}_{원본파일명}
+    filename = f"{file_type}_{admin_id}_{uploaded_file.name}"
+    file_path = os.path.join(prof_storage, filename)
+    
+    try:
+        # 파일 저장
+        with open(file_path, 'wb') as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # 데이터베이스에 기록
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        
+        upload_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('''
+            INSERT INTO professor_files (admin_id, file_type, file_path, original_filename, upload_time)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (admin_id, file_type, file_path, uploaded_file.name, upload_time))
+        
+        conn.commit()
+        conn.close()
+        
+        return True, "파일이 성공적으로 업로드되었습니다!"
+    except Exception as e:
+        return False, f"파일 업로드 중 오류가 발생했습니다: {str(e)}"
+
+def get_professor_files(admin_id=None):
+    """교수 파일 목록을 조회합니다."""
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    
+    if admin_id:
+        cursor.execute('''
+            SELECT file_id, file_type, original_filename, upload_time, file_path
+            FROM professor_files 
+            WHERE admin_id = ?
+            ORDER BY upload_time DESC
+        ''', (admin_id,))
+    else:
+        cursor.execute('''
+            SELECT pf.file_id, pf.file_type, pf.original_filename, pf.upload_time, pf.file_path, p.name
+            FROM professor_files pf
+            JOIN professors p ON pf.admin_id = p.admin_id
+            ORDER BY pf.upload_time DESC
+        ''')
+    
+    results = cursor.fetchall()
+    conn.close()
+    
+    return results
+
+def delete_professor_file(file_id, file_path):
+    """교수 파일을 삭제합니다."""
+    try:
+        # 파일 삭제
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        # 데이터베이스에서 기록 삭제
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM professor_files WHERE file_id = ?', (file_id,))
+        conn.commit()
+        conn.close()
+        
+        return True, "파일이 성공적으로 삭제되었습니다."
+    except Exception as e:
+        return False, f"삭제 중 오류가 발생했습니다: {str(e)}"
+
 def student_dashboard():
     """학생용 대시보드를 표시합니다."""
     st.header(f"환영합니다, {st.session_state.user_name}님! 👨‍🎓")
@@ -254,53 +348,157 @@ def admin_dashboard():
     st.header(f"관리자 대시보드 👨‍🏫")
     st.subheader(f"환영합니다, {st.session_state.user_name}님!")
     
-    # 제출 현황 대시보드
-    st.markdown("---")
-    st.subheader("📊 전체 제출 현황")
+    # 탭으로 기능 구분
+    tab1, tab2, tab3 = st.tabs(["📊 제출 현황", "📤 파일 업로드", "📁 업로드된 파일"])
     
-    submissions = get_all_submissions()
+    with tab1:
+        # 제출 현황 대시보드
+        st.subheader("📊 전체 제출 현황")
+        
+        submissions = get_all_submissions()
+        
+        if submissions:
+            # DataFrame 생성
+            df = pd.DataFrame(submissions, columns=['학번', '이름', '파일명', '제출시간'])
+            
+            # 통계 정보 표시
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("총 제출 건수", len(submissions))
+            
+            with col2:
+                unique_students = df['학번'].nunique()
+                st.metric("제출한 학생 수", unique_students)
+            
+            with col3:
+                # 가장 최근 제출 시간
+                latest_submission = df['제출시간'].iloc[0] if len(df) > 0 else "없음"
+                st.metric("최근 제출", latest_submission)
+            
+            st.markdown("---")
+            
+            # 전체 제출 목록 표시
+            st.subheader("📝 상세 제출 목록")
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # 학생별 제출 현황
+            st.markdown("---")
+            st.subheader("👥 학생별 제출 현황")
+            student_counts = df.groupby(['학번', '이름']).size().reset_index(name='제출 건수')
+            st.dataframe(
+                student_counts,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+        else:
+            st.info("아직 제출된 과제가 없습니다.")
     
-    if submissions:
-        # DataFrame 생성
-        df = pd.DataFrame(submissions, columns=['학번', '이름', '파일명', '제출시간'])
+    with tab2:
+        # 파일 업로드 섹션
+        st.subheader("📤 파일 업로드")
+        st.write("평가기준 및 모범답안 파일을 업로드하세요.")
         
-        # 통계 정보 표시
-        col1, col2, col3 = st.columns(3)
+        # 파일 타입 선택
+        file_type = st.selectbox(
+            "파일 유형 선택",
+            ["평가기준", "모범답안"],
+            help="업로드할 파일의 유형을 선택하세요."
+        )
         
+        # 파일 업로드
+        uploaded_file = st.file_uploader(
+            f"{file_type} 파일을 선택하세요",
+            type=['pdf', 'docx', 'doc', 'txt', 'hwp', 'pptx'],
+            help="PDF, Word 문서, 텍스트 파일, 한글 파일, PowerPoint를 업로드할 수 있습니다.",
+            key=f"upload_{file_type}"
+        )
+        
+        if uploaded_file is not None:
+            st.info(f"선택된 파일: {uploaded_file.name} ({uploaded_file.size} bytes)")
+            
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                if st.button("📤 업로드", type="primary", key=f"upload_btn_{file_type}"):
+                    success, message = save_professor_file(st.session_state.user_id, uploaded_file, file_type)
+                    if success:
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
+    
+    with tab3:
+        # 업로드된 파일 목록
+        col1, col2 = st.columns([3, 1])
         with col1:
-            st.metric("총 제출 건수", len(submissions))
-        
+            st.subheader("📁 업로드된 파일 목록")
         with col2:
-            unique_students = df['학번'].nunique()
-            st.metric("제출한 학생 수", unique_students)
+            if st.button("🔄 새로고침", key="refresh_professor_files"):
+                st.rerun()
         
-        with col3:
-            # 가장 최근 제출 시간
-            latest_submission = df['제출시간'].iloc[0] if len(df) > 0 else "없음"
-            st.metric("최근 제출", latest_submission)
+        professor_files = get_professor_files(st.session_state.user_id)
         
-        st.markdown("---")
+        if professor_files:
+            st.write(f"총 {len(professor_files)}개의 파일이 업로드되어 있습니다.")
+            
+            # 파일 타입별로 그룹화
+            evaluation_files = [f for f in professor_files if f[1] == '평가기준']
+            answer_files = [f for f in professor_files if f[1] == '모범답안']
+            
+            # 평가기준 파일들
+            if evaluation_files:
+                st.markdown("### 📋 평가기준 파일")
+                for file_id, file_type, original_filename, upload_time, file_path in evaluation_files:
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        st.write(f"**{original_filename}**")
+                    
+                    with col2:
+                        st.write(f"업로드: {upload_time}")
+                    
+                    with col3:
+                        if st.button("🗑️ 삭제", key=f"delete_prof_{file_id}"):
+                            success, message = delete_professor_file(file_id, file_path)
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
+                
+                st.markdown("---")
+            
+            # 모범답안 파일들
+            if answer_files:
+                st.markdown("### 📝 모범답안 파일")
+                for file_id, file_type, original_filename, upload_time, file_path in answer_files:
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        st.write(f"**{original_filename}**")
+                    
+                    with col2:
+                        st.write(f"업로드: {upload_time}")
+                    
+                    with col3:
+                        if st.button("🗑️ 삭제", key=f"delete_prof_{file_id}"):
+                            success, message = delete_professor_file(file_id, file_path)
+                            if success:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
+            
+            if not evaluation_files and not answer_files:
+                st.info("업로드된 파일이 없습니다.")
         
-        # 전체 제출 목록 표시
-        st.subheader("📝 상세 제출 목록")
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # 학생별 제출 현황
-        st.markdown("---")
-        st.subheader("👥 학생별 제출 현황")
-        student_counts = df.groupby(['학번', '이름']).size().reset_index(name='제출 건수')
-        st.dataframe(
-            student_counts,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-    else:
-        st.info("아직 제출된 과제가 없습니다.")
+        else:
+            st.info("아직 업로드된 파일이 없습니다.")
 
 def main():
     """메인 애플리케이션 함수"""
