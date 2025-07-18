@@ -89,6 +89,14 @@ def initialize_database():
             UNIQUE(submission_id, admin_id)
         )
     ''')
+            comments TEXT,
+            evaluation_time DATETIME NOT NULL,
+            FOREIGN KEY (submission_id) REFERENCES submissions (submission_id),
+            FOREIGN KEY (admin_id) REFERENCES professors (admin_id),
+            UNIQUE(submission_id, admin_id)
+        )
+    ''')
+    
     # 초기 데이터 확인 및 삽입
     cursor.execute('SELECT COUNT(*) FROM students')
     if cursor.fetchone()[0] == 0:
@@ -190,11 +198,7 @@ def get_student_submissions(student_id):
             e.grade,
             e.comments,
             e.evaluation_time,
-            p.name as professor_name,
-            e.is_auto_evaluated,
-            e.auto_grade,
-            e.auto_comments,
-            e.auto_evaluation_time
+            p.name as professor_name
         FROM submissions s
         LEFT JOIN evaluations e ON s.submission_id = e.submission_id
         LEFT JOIN professors p ON e.admin_id = p.admin_id
@@ -398,96 +402,6 @@ def read_txt_content(file_path):
     except Exception as e:
         return False, f"텍스트 파일 읽기 오류: {str(e)}"
 
-def auto_evaluate_submission(submission_id, admin_id):
-    """Bedrock을 사용하여 학생 과제를 자동으로 평가합니다."""
-    try:
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
-        
-        # 제출물 정보 가져오기
-        cursor.execute('''
-            SELECT file_path FROM submissions WHERE submission_id = ?
-        ''', (submission_id,))
-        submission_result = cursor.fetchone()
-        
-        if not submission_result:
-            conn.close()
-            return False, "제출물을 찾을 수 없습니다."
-        
-        submission_path = submission_result[0]
-        
-        # 평가 기준 파일 가져오기
-        cursor.execute('''
-            SELECT file_path FROM professor_files 
-            WHERE file_type = '평가기준' 
-            ORDER BY upload_time DESC LIMIT 1
-        ''')
-        criteria_result = cursor.fetchone()
-        
-        if not criteria_result:
-            conn.close()
-            return False, "평가 기준 파일을 찾을 수 없습니다."
-        
-        criteria_path = criteria_result[0]
-        
-        # 모범 답안 파일 가져오기 (선택적)
-        cursor.execute('''
-            SELECT file_path FROM professor_files 
-            WHERE file_type = '모범답안' 
-            ORDER BY upload_time DESC LIMIT 1
-        ''')
-        model_answer_result = cursor.fetchone()
-        
-        model_answer_path = None
-        if model_answer_result:
-            model_answer_path = model_answer_result[0]
-        
-        # Bedrock 평가기 초기화
-        evaluator = BedrockEvaluator()
-        
-        # 자동 평가 실행
-        evaluation_result = evaluator.evaluate_submission(
-            submission_path, 
-            criteria_path, 
-            model_answer_path
-        )
-        
-        auto_grade = evaluation_result.get('grade')
-        auto_comments = evaluation_result.get('comments')
-        auto_evaluation_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # 평가 결과 저장
-        cursor.execute('''
-            SELECT evaluation_id FROM evaluations 
-            WHERE submission_id = ? AND admin_id = ?
-        ''', (submission_id, admin_id))
-        
-        existing = cursor.fetchone()
-        
-        if existing:
-            # 기존 평가 업데이트
-            cursor.execute('''
-                UPDATE evaluations 
-                SET is_auto_evaluated = 1, auto_grade = ?, auto_comments = ?, auto_evaluation_time = ?
-                WHERE submission_id = ? AND admin_id = ?
-            ''', (auto_grade, auto_comments, auto_evaluation_time, submission_id, admin_id))
-        else:
-            # 새 평가 추가
-            cursor.execute('''
-                INSERT INTO evaluations 
-                (submission_id, admin_id, grade, comments, evaluation_time, 
-                is_auto_evaluated, auto_grade, auto_comments, auto_evaluation_time)
-                VALUES (?, ?, NULL, NULL, ?, 1, ?, ?, ?)
-            ''', (submission_id, admin_id, auto_evaluation_time, auto_grade, auto_comments, auto_evaluation_time))
-        
-        conn.commit()
-        conn.close()
-        
-        return True, f"자동 평가가 완료되었습니다. 등급: {auto_grade}"
-    except Exception as e:
-        logger.error(f"자동 평가 중 오류 발생: {str(e)}")
-        return False, f"자동 평가 중 오류가 발생했습니다: {str(e)}"
-
 def save_evaluation(submission_id, admin_id, grade, comments):
     """학생 과제 평가를 저장하거나 업데이트합니다."""
     try:
@@ -498,7 +412,7 @@ def save_evaluation(submission_id, admin_id, grade, comments):
         
         # 기존 평가가 있는지 확인
         cursor.execute('''
-            SELECT evaluation_id, is_auto_evaluated, auto_grade, auto_comments FROM evaluations 
+            SELECT evaluation_id FROM evaluations 
             WHERE submission_id = ? AND admin_id = ?
         ''', (submission_id, admin_id))
         
@@ -533,7 +447,7 @@ def get_evaluation(submission_id, admin_id):
     cursor = conn.cursor()
     
     cursor.execute('''
-        SELECT grade, comments, evaluation_time, is_auto_evaluated, auto_grade, auto_comments, auto_evaluation_time
+        SELECT grade, comments, evaluation_time
         FROM evaluations 
         WHERE submission_id = ? AND admin_id = ?
     ''', (submission_id, admin_id))
@@ -558,11 +472,7 @@ def get_submissions_with_evaluations():
             s.file_path,
             e.grade,
             e.comments,
-            e.evaluation_time,
-            e.is_auto_evaluated,
-            e.auto_grade,
-            e.auto_comments,
-            e.auto_evaluation_time
+            e.evaluation_time
         FROM submissions s
         JOIN students st ON s.student_id = st.student_id
         LEFT JOIN evaluations e ON s.submission_id = e.submission_id
@@ -621,8 +531,7 @@ def student_dashboard():
     
     if submissions:
         for submission_data in submissions:
-            submission_id, original_filename, submission_time, file_path, grade, comments, eval_time, professor_name = submission_data[:8]
-            is_auto_evaluated, auto_grade, auto_comments, auto_eval_time = submission_data[8:12]
+            submission_id, original_filename, submission_time, file_path, grade, comments, eval_time, professor_name = submission_data
             
             # 제출물 정보 표시
             col1, col2, col3 = st.columns([3, 2, 1])
@@ -631,21 +540,14 @@ def student_dashboard():
                 st.write(f"**{original_filename}**")
                 if grade:
                     grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
-                    st.write(f"교수 평가: {grade_color.get(grade, '⚪')} **{grade}** (교수: {professor_name})")
+                    st.write(f"평가: {grade_color.get(grade, '⚪')} **{grade}점** (교수: {professor_name})")
                 else:
-                    st.write("📋 교수 평가 대기중")
-                
-                # 자동 평가 결과 표시
-                if is_auto_evaluated and auto_grade:
-                    grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
-                    st.write(f"🤖 AI 평가: {grade_color.get(auto_grade, '⚪')} **{auto_grade}**")
+                    st.write("📋 평가 대기중")
             
             with col2:
                 st.write(f"제출시간: {submission_time}")
                 if eval_time:
-                    st.write(f"교수 평가시간: {eval_time}")
-                if auto_eval_time:
-                    st.write(f"AI 평가시간: {auto_eval_time}")
+                    st.write(f"평가시간: {eval_time}")
             
             with col3:
                 if st.button("🗑️ 삭제", key=f"delete_{submission_id}"):
@@ -661,13 +563,6 @@ def student_dashboard():
                 with st.expander(f"💬 교수님 피드백"):
                     st.write(comments)
             
-            # 자동 평가 코멘트 표시
-            if is_auto_evaluated and auto_comments:
-                with st.expander(f"🤖 AI 피드백"):
-                    st.write(auto_comments)
-                with st.expander(f"💬 교수님 피드백"):
-                    st.write(comments)
-            
             st.markdown("---")
     else:
         st.info("아직 제출한 과제가 없습니다.")
@@ -678,7 +573,7 @@ def admin_dashboard():
     st.subheader(f"환영합니다, {st.session_state.user_name}님!")
     
     # 탭으로 기능 구분
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 제출 현황", "🤖 자동 평가", "📤 파일 업로드", "📁 업로드된 파일"])
+    tab1, tab2, tab3 = st.tabs(["📊 제출 현황", "📤 파일 업로드", "📁 업로드된 파일"])
     
     with tab1:
         # 제출 현황 대시보드
@@ -713,7 +608,7 @@ def admin_dashboard():
             st.subheader("📝 제출물 평가 및 관리")
             
             for submission_data in submissions_with_eval:
-                submission_id, student_id, name, filename, submit_time, file_path, grade, comments, eval_time, is_auto_evaluated, auto_grade, auto_comments, auto_eval_time = submission_data
+                submission_id, student_id, name, filename, submit_time, file_path, grade, comments, eval_time = submission_data
                 
                 # 제출물 정보 표시
                 with st.container():
@@ -727,13 +622,7 @@ def admin_dashboard():
                         st.write(f"제출시간: {submit_time}")
                         if grade:
                             grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
-                            st.write(f"교수 평가: {grade_color.get(grade, '⚪')} **{grade}**")
-                        elif is_auto_evaluated and auto_grade:
-                            grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
-                            st.write(f"🤖 자동 평가: {grade_color.get(auto_grade, '⚪')} **{auto_grade}**")
-                            st.write("(교수 평가 대기중)")
-                        else:
-                            st.write("📋 평가 대기중")
+                            st.write(f"평가: {grade_color.get(grade, '⚪')} **{grade}**")
                     
                     with col3:
                         if st.button("👁️ 파일보기", key=f"view_file_{submission_id}"):
@@ -745,11 +634,7 @@ def admin_dashboard():
                                 st.error(content)
                     
                     with col4:
-                        eval_button_text = "📝 평가하기"
-                        if is_auto_evaluated and auto_grade and not grade:
-                            eval_button_text = "📝 AI 평가 수정"
-                        
-                        if st.button(eval_button_text, key=f"evaluate_{submission_id}"):
+                        if st.button("📝 평가하기", key=f"evaluate_{submission_id}"):
                             st.session_state[f"show_evaluation_{submission_id}"] = True
                     
                     # 파일 내용 표시
@@ -777,14 +662,7 @@ def admin_dashboard():
                             with col_grade:
                                 # 성적 선택
                                 grade_options = ["A", "B", "C", "D", "F"]
-                                
-                                # 기존 교수 평가가 있으면 그 값을 사용, 없으면 자동 평가 결과 사용
-                                current_grade = None
-                                if existing_eval and existing_eval[0]:
-                                    current_grade = existing_eval[0]
-                                elif is_auto_evaluated and auto_grade:
-                                    current_grade = auto_grade
-                                
+                                current_grade = existing_eval[0] if existing_eval else None
                                 default_index = grade_options.index(current_grade) if current_grade in grade_options else 0
                                 
                                 selected_grade = st.selectbox(
@@ -794,13 +672,8 @@ def admin_dashboard():
                                     key=f"grade_{submission_id}"
                                 )
                                 
-                                # 코멘트 입력 - 기존 교수 코멘트가 있으면 그 값을 사용, 없으면 자동 평가 코멘트 사용
-                                current_comments = ""
-                                if existing_eval and existing_eval[1]:
-                                    current_comments = existing_eval[1]
-                                elif is_auto_evaluated and auto_comments:
-                                    current_comments = auto_comments
-                                
+                                # 코멘트 입력
+                                current_comments = existing_eval[1] if existing_eval else ""
                                 evaluation_comments = st.text_area(
                                     "평가 코멘트",
                                     value=current_comments,
@@ -808,10 +681,6 @@ def admin_dashboard():
                                     placeholder="학생에게 전달할 피드백을 입력하세요...",
                                     key=f"comments_{submission_id}"
                                 )
-                                
-                                # 자동 평가 결과 표시
-                                if is_auto_evaluated and auto_grade:
-                                    st.info(f"🤖 AI 평가 결과: {auto_grade} 등급")
                             
                             # 저장 및 취소 버튼
                             col_save_btn, col_cancel_btn = st.columns([1, 1])
@@ -842,187 +711,6 @@ def admin_dashboard():
             st.info("아직 제출된 과제가 없습니다.")
     
     with tab2:
-        # 자동 평가 탭
-        st.subheader("🤖 Bedrock 자동 평가")
-        st.write("AWS Bedrock을 활용하여 학생 과제를 자동으로 평가합니다.")
-        
-        # 평가 기준 및 모범 답안 확인
-        criteria_files = []
-        answer_files = []
-        
-        conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
-        
-        # 평가 기준 파일 확인
-        cursor.execute('''
-            SELECT file_id, original_filename, upload_time FROM professor_files 
-            WHERE file_type = '평가기준' 
-            ORDER BY upload_time DESC LIMIT 1
-        ''')
-        criteria_file = cursor.fetchone()
-        
-        # 모범 답안 파일 확인
-        cursor.execute('''
-            SELECT file_id, original_filename, upload_time FROM professor_files 
-            WHERE file_type = '모범답안' 
-            ORDER BY upload_time DESC LIMIT 1
-        ''')
-        answer_file = cursor.fetchone()
-        
-        conn.close()
-        
-        # 파일 상태 표시
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 평가 기준 파일")
-            if criteria_file:
-                st.success(f"✅ {criteria_file[1]} (업로드: {criteria_file[2]})")
-            else:
-                st.error("❌ 평가 기준 파일이 없습니다. '파일 업로드' 탭에서 업로드하세요.")
-        
-        with col2:
-            st.markdown("### 모범 답안 파일")
-            if answer_file:
-                st.success(f"✅ {answer_file[1]} (업로드: {answer_file[2]})")
-            else:
-                st.warning("⚠️ 모범 답안 파일이 없습니다. 선택적으로 업로드할 수 있습니다.")
-        
-        st.markdown("---")
-        
-        # 자동 평가할 제출물 목록
-        st.subheader("📝 자동 평가 대상 과제")
-        
-        submissions_with_eval = get_submissions_with_evaluations()
-        
-        if submissions_with_eval and criteria_file:
-            for submission_data in submissions_with_eval:
-                submission_id, student_id, name, filename, submit_time, file_path = submission_data[:6]
-                grade, comments, eval_time = submission_data[6:9]
-                is_auto_evaluated, auto_grade, auto_comments, auto_eval_time = submission_data[9:13]
-                
-                # 제출물 정보 표시
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    
-                    with col1:
-                        st.write(f"**{name}** ({student_id})")
-                        st.write(f"📄 {filename}")
-                        
-                        if is_auto_evaluated:
-                            grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
-                            st.write(f"자동 평가: {grade_color.get(auto_grade, '⚪')} **{auto_grade}** (평가시간: {auto_eval_time})")
-                    
-                    with col2:
-                        st.write(f"제출시간: {submit_time}")
-                        if grade:
-                            grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
-                            st.write(f"교수 평가: {grade_color.get(grade, '⚪')} **{grade}**")
-                    
-                    with col3:
-                        if not is_auto_evaluated:
-                            if st.button("🤖 자동 평가", key=f"auto_eval_{submission_id}"):
-                                with st.spinner("Bedrock으로 자동 평가 중..."):
-                                    success, message = auto_evaluate_submission(submission_id, st.session_state.user_id)
-                                if success:
-                                    st.success(message)
-                                    st.rerun()
-                                else:
-                                    st.error(message)
-                        else:
-                            col_buttons = st.columns([1, 1])
-                            with col_buttons[0]:
-                                if st.button("🔄 재평가", key=f"re_eval_{submission_id}"):
-                                    with st.spinner("Bedrock으로 자동 평가 중..."):
-                                        success, message = auto_evaluate_submission(submission_id, st.session_state.user_id)
-                                    if success:
-                                        st.success(message)
-                                        st.rerun()
-                                    else:
-                                        st.error(message)
-                            with col_buttons[1]:
-                                if st.button("✏️ 수정", key=f"edit_eval_{submission_id}"):
-                                    st.session_state[f"show_edit_evaluation_{submission_id}"] = True
-                                    st.rerun()
-                    
-                    # 자동 평가 코멘트 표시
-                    if is_auto_evaluated and auto_comments:
-                        with st.expander(f"🤖 자동 평가 피드백"):
-                            st.write(auto_comments)
-                    
-                    # 교수 평가 수정 폼
-                    if f"show_edit_evaluation_{submission_id}" in st.session_state:
-                        with st.expander(f"✏️ 평가 수정", expanded=True):
-                            # 자동 평가 결과를 초기값으로 사용
-                            grade_options = ["A", "B", "C", "D", "F"]
-                            
-                            # 기존 교수 평가가 있으면 그 값을 사용, 없으면 자동 평가 결과 사용
-                            default_grade = grade if grade else auto_grade
-                            default_index = grade_options.index(default_grade) if default_grade in grade_options else 0
-                            
-                            # 기존 교수 코멘트가 있으면 그 값을 사용, 없으면 자동 평가 코멘트 사용
-                            default_comments = comments if comments else auto_comments
-                            
-                            col_grade, col_save = st.columns([3, 1])
-                            
-                            with col_grade:
-                                # 성적 선택
-                                selected_grade = st.selectbox(
-                                    "성적 선택",
-                                    grade_options,
-                                    index=default_index,
-                                    key=f"grade_{submission_id}"
-                                )
-                                
-                                # 코멘트 입력
-                                evaluation_comments = st.text_area(
-                                    "평가 코멘트",
-                                    value=default_comments,
-                                    height=100,
-                                    placeholder="학생에게 전달할 피드백을 입력하세요...",
-                                    key=f"comments_{submission_id}"
-                                )
-                            
-                            # 저장 및 취소 버튼
-                            col_save_btn, col_cancel_btn = st.columns([1, 1])
-                            
-                            with col_save_btn:
-                                if st.button("💾 평가 저장", key=f"save_eval_{submission_id}", type="primary"):
-                                    success, message = save_evaluation(
-                                        submission_id, 
-                                        st.session_state.user_id, 
-                                        selected_grade, 
-                                        evaluation_comments
-                                    )
-                                    if success:
-                                        st.success(message)
-                                        del st.session_state[f"show_edit_evaluation_{submission_id}"]
-                                        st.rerun()
-                                    else:
-                                        st.error(message)
-                            
-                            with col_cancel_btn:
-                                if st.button("❌ 취소", key=f"cancel_eval_{submission_id}"):
-                                    del st.session_state[f"show_edit_evaluation_{submission_id}"]
-                                    st.rerun()
-                    
-                    st.markdown("---")
-        elif not criteria_file:
-            st.warning("⚠️ 자동 평가를 위해서는 평가 기준 파일이 필요합니다. '파일 업로드' 탭에서 업로드하세요.")
-        else:
-            st.info("아직 제출된 과제가 없습니다.")
-        
-        st.markdown("---")
-        st.subheader("ℹ️ 자동 평가 정보")
-        st.info("""
-        **자동 평가 시스템 작동 방식:**
-        1. AWS Bedrock의 Claude 모델을 사용하여 학생 과제를 평가합니다.
-        2. 평가 기준 파일과 모범 답안(선택적)을 기반으로 평가합니다.
-        3. 평가 결과는 A, B, C, D, F 등급과 상세한 피드백으로 제공됩니다.
-        4. 자동 평가 결과는 교수님의 최종 평가를 위한 참고 자료로 활용할 수 있습니다.
-        """)
-        
-    with tab3:
         # 파일 업로드 섹션
         st.subheader("📤 파일 업로드")
         st.write("평가기준 및 모범답안 파일을 업로드하세요.")
