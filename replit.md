@@ -1,6 +1,6 @@
 # Overview
 
-This is a Streamlit-based Student Assignment Submission and Management System. The application allows students to submit assignments online while enabling professors (administrators) to monitor submission status. The system features role-based access with two user types: students and administrators (professors). Data is stored in SQLite database and files are saved to local server folders.
+This is a Streamlit-based Student Assignment Submission and Management System v1.0. The application allows students to submit assignments online while enabling professors (administrators) to monitor submission status, evaluate submissions with grades (A-F) and comments, and manage reference materials. The system features role-based access with two user types: students and administrators (professors). Data is stored in SQLite database and files are saved to local server folders.
 
 # User Preferences
 
@@ -28,7 +28,7 @@ Preferred communication style: Simple, everyday language.
 # Key Components
 
 ## Database Schema
-The system uses three main tables:
+The system uses five main tables:
 
 1. **students table**
    - `student_id` (TEXT, Primary Key): Student ID (e.g., '20251111')
@@ -44,13 +44,34 @@ The system uses three main tables:
 3. **submissions table**
    - `submission_id` (INTEGER, Primary Key, Autoincrement): Unique submission ID
    - `student_id` (TEXT): Foreign key to students table
+   - `file_path` (TEXT): Path to submitted file
+   - `original_filename` (TEXT): Original filename
+   - `submission_time` (DATETIME): Submission timestamp
+
+4. **professor_files table**
+   - `file_id` (INTEGER, Primary Key, Autoincrement): File ID
+   - `admin_id` (TEXT): Professor ID
+   - `file_type` (TEXT): File type (평가기준/모범답안)
+   - `file_path` (TEXT): Path to uploaded file
+   - `original_filename` (TEXT): Original filename
+   - `upload_time` (DATETIME): Upload timestamp
+
+5. **evaluations table**
+   - `evaluation_id` (INTEGER, Primary Key, Autoincrement): Evaluation ID
+   - `submission_id` (INTEGER): Foreign key to submissions
+   - `admin_id` (TEXT): Professor who evaluated
+   - `grade` (TEXT): Grade (A, B, C, D, F)
+   - `comments` (TEXT): Evaluation comments
+   - `evaluation_time` (DATETIME): Evaluation timestamp
 
 ## User Roles
-- **Students**: Can submit assignments and view their submission history
-- **Administrators/Professors**: Can view all submissions and manage the system
+- **Students**: Can submit assignments, view submission history, and check evaluation results
+- **Administrators/Professors**: Can view all submissions, evaluate with grades (A-F), provide feedback comments, upload reference materials (evaluation criteria, model answers), and view file contents
 
 ## File Management
-- Assignment files stored in `storage/` directory
+- Student assignment files stored in `storage/` directory with naming pattern: `{student_id}_{filename}`
+- Professor reference files stored in `storage/professor_files/` directory with naming pattern: `{file_type}_{admin_id}_{filename}`
+- Supported file formats for viewing: PDF, Word documents, text files
 - Local filesystem storage for simplicity and direct access
 
 # Data Flow
@@ -67,6 +88,9 @@ The system uses three main tables:
 - **Streamlit**: Web application framework
 - **SQLite3**: Database connectivity (built into Python)
 - **Hashlib**: Password hashing for security
+- **Pandas**: Data manipulation and display
+- **PyPDF2**: PDF file content extraction
+- **python-docx**: Word document content extraction
 - **OS/File System**: Local file operations for assignment storage
 
 ## Database Dependencies
@@ -83,9 +107,17 @@ The system uses three main tables:
 ## File Structure
 ```
 project/
-├── app.py                 # Main Streamlit application
-├── database.db           # SQLite database file
-└── storage/              # Assignment file storage directory
+├── app.py                      # Main Streamlit application
+├── database.db                 # SQLite database file
+├── storage/                    # Assignment file storage directory
+│   ├── {student_id}_{filename} # Student submission files
+│   └── professor_files/        # Professor reference files
+├── docs/                       # Documentation
+│   ├── README.md               # Project overview and user guide
+│   └── version1.0-features.md  # Detailed feature specification
+├── .streamlit/
+│   └── config.toml             # Streamlit configuration
+└── replit.md                   # Project architecture documentation
 ```
 
 ## Deployment Considerations
