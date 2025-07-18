@@ -4,6 +4,8 @@ import hashlib
 import pandas as pd
 import os
 from datetime import datetime
+import PyPDF2
+from docx import Document
 
 # 애플리케이션 설정
 st.set_page_config(
@@ -283,6 +285,80 @@ def delete_professor_file(file_id, file_path):
     except Exception as e:
         return False, f"삭제 중 오류가 발생했습니다: {str(e)}"
 
+def read_file_content(file_path):
+    """파일 내용을 읽어서 반환합니다."""
+    try:
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        if file_extension == '.pdf':
+            return read_pdf_content(file_path)
+        elif file_extension in ['.docx', '.doc']:
+            return read_docx_content(file_path)
+        elif file_extension == '.txt':
+            return read_txt_content(file_path)
+        else:
+            return False, "지원하지 않는 파일 형식입니다. (PDF, Word, TXT 파일만 미리보기 가능)"
+    
+    except Exception as e:
+        return False, f"파일을 읽는 중 오류가 발생했습니다: {str(e)}"
+
+def read_pdf_content(file_path):
+    """PDF 파일 내용을 읽습니다."""
+    try:
+        with open(file_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            content = ""
+            
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                content += page.extract_text() + "\n"
+            
+            if content.strip():
+                return True, content
+            else:
+                return False, "PDF에서 텍스트를 추출할 수 없습니다."
+    
+    except Exception as e:
+        return False, f"PDF 읽기 오류: {str(e)}"
+
+def read_docx_content(file_path):
+    """Word 문서 내용을 읽습니다."""
+    try:
+        doc = Document(file_path)
+        content = ""
+        
+        for paragraph in doc.paragraphs:
+            content += paragraph.text + "\n"
+        
+        if content.strip():
+            return True, content
+        else:
+            return False, "Word 문서에 텍스트가 없습니다."
+    
+    except Exception as e:
+        return False, f"Word 문서 읽기 오류: {str(e)}"
+
+def read_txt_content(file_path):
+    """텍스트 파일 내용을 읽습니다."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            content = file.read()
+        
+        if content.strip():
+            return True, content
+        else:
+            return False, "텍스트 파일이 비어있습니다."
+    
+    except UnicodeDecodeError:
+        try:
+            with open(file_path, 'r', encoding='cp949') as file:
+                content = file.read()
+            return True, content
+        except Exception as e:
+            return False, f"텍스트 파일 인코딩 오류: {str(e)}"
+    except Exception as e:
+        return False, f"텍스트 파일 읽기 오류: {str(e)}"
+
 def student_dashboard():
     """학생용 대시보드를 표시합니다."""
     st.header(f"환영합니다, {st.session_state.user_name}님! 👨‍🎓")
@@ -470,7 +546,7 @@ def admin_dashboard():
             if evaluation_files:
                 st.markdown("### 📋 평가기준 파일")
                 for file_id, file_type, original_filename, upload_time, file_path in evaluation_files:
-                    col1, col2, col3 = st.columns([3, 2, 1])
+                    col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
                     
                     with col1:
                         st.write(f"**{original_filename}**")
@@ -479,6 +555,14 @@ def admin_dashboard():
                         st.write(f"업로드: {upload_time}")
                     
                     with col3:
+                        if st.button("👁️ 내용보기", key=f"view_eval_{file_id}"):
+                            success, content = read_file_content(file_path)
+                            if success:
+                                st.session_state[f"show_content_{file_id}"] = content
+                            else:
+                                st.error(content)
+                    
+                    with col4:
                         if st.button("🗑️ 삭제", key=f"delete_prof_{file_id}"):
                             success, message = delete_professor_file(file_id, file_path)
                             if success:
@@ -486,6 +570,19 @@ def admin_dashboard():
                                 st.rerun()
                             else:
                                 st.error(message)
+                    
+                    # 파일 내용 표시
+                    if f"show_content_{file_id}" in st.session_state:
+                        with st.expander(f"📄 {original_filename} 내용", expanded=True):
+                            st.text_area(
+                                "파일 내용:",
+                                st.session_state[f"show_content_{file_id}"],
+                                height=300,
+                                key=f"content_area_{file_id}"
+                            )
+                            if st.button("❌ 닫기", key=f"close_{file_id}"):
+                                del st.session_state[f"show_content_{file_id}"]
+                                st.rerun()
                 
                 st.markdown("---")
             
@@ -493,7 +590,7 @@ def admin_dashboard():
             if answer_files:
                 st.markdown("### 📝 모범답안 파일")
                 for file_id, file_type, original_filename, upload_time, file_path in answer_files:
-                    col1, col2, col3 = st.columns([3, 2, 1])
+                    col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
                     
                     with col1:
                         st.write(f"**{original_filename}**")
@@ -502,6 +599,14 @@ def admin_dashboard():
                         st.write(f"업로드: {upload_time}")
                     
                     with col3:
+                        if st.button("👁️ 내용보기", key=f"view_answer_{file_id}"):
+                            success, content = read_file_content(file_path)
+                            if success:
+                                st.session_state[f"show_content_{file_id}"] = content
+                            else:
+                                st.error(content)
+                    
+                    with col4:
                         if st.button("🗑️ 삭제", key=f"delete_prof_{file_id}"):
                             success, message = delete_professor_file(file_id, file_path)
                             if success:
@@ -509,6 +614,19 @@ def admin_dashboard():
                                 st.rerun()
                             else:
                                 st.error(message)
+                    
+                    # 파일 내용 표시
+                    if f"show_content_{file_id}" in st.session_state:
+                        with st.expander(f"📄 {original_filename} 내용", expanded=True):
+                            st.text_area(
+                                "파일 내용:",
+                                st.session_state[f"show_content_{file_id}"],
+                                height=300,
+                                key=f"content_area_answer_{file_id}"
+                            )
+                            if st.button("❌ 닫기", key=f"close_answer_{file_id}"):
+                                del st.session_state[f"show_content_{file_id}"]
+                                st.rerun()
             
             if not evaluation_files and not answer_files:
                 st.info("업로드된 파일이 없습니다.")
