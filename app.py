@@ -64,6 +64,21 @@ def initialize_database():
         )
     ''')
     
+    # evaluations 테이블 생성 (학생 과제 평가)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS evaluations (
+            evaluation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER NOT NULL,
+            admin_id TEXT NOT NULL,
+            grade TEXT CHECK(grade IN ('A', 'B', 'C', 'D', 'F')),
+            comments TEXT,
+            evaluation_time DATETIME NOT NULL,
+            FOREIGN KEY (submission_id) REFERENCES submissions (submission_id),
+            FOREIGN KEY (admin_id) REFERENCES professors (admin_id),
+            UNIQUE(submission_id, admin_id)
+        )
+    ''')
+    
     # 초기 데이터 확인 및 삽입
     cursor.execute('SELECT COUNT(*) FROM students')
     if cursor.fetchone()[0] == 0:
@@ -157,10 +172,20 @@ def get_student_submissions(student_id):
     cursor = conn.cursor()
     
     cursor.execute('''
-        SELECT submission_id, original_filename, submission_time, file_path
-        FROM submissions 
-        WHERE student_id = ?
-        ORDER BY submission_time DESC
+        SELECT 
+            s.submission_id, 
+            s.original_filename, 
+            s.submission_time, 
+            s.file_path,
+            e.grade,
+            e.comments,
+            e.evaluation_time,
+            p.name as professor_name
+        FROM submissions s
+        LEFT JOIN evaluations e ON s.submission_id = e.submission_id
+        LEFT JOIN professors p ON e.admin_id = p.admin_id
+        WHERE s.student_id = ?
+        ORDER BY s.submission_time DESC
     ''', (student_id,))
     
     results = cursor.fetchall()
@@ -359,6 +384,88 @@ def read_txt_content(file_path):
     except Exception as e:
         return False, f"텍스트 파일 읽기 오류: {str(e)}"
 
+def save_evaluation(submission_id, admin_id, grade, comments):
+    """학생 과제 평가를 저장하거나 업데이트합니다."""
+    try:
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+        
+        evaluation_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 기존 평가가 있는지 확인
+        cursor.execute('''
+            SELECT evaluation_id FROM evaluations 
+            WHERE submission_id = ? AND admin_id = ?
+        ''', (submission_id, admin_id))
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            # 기존 평가 업데이트
+            cursor.execute('''
+                UPDATE evaluations 
+                SET grade = ?, comments = ?, evaluation_time = ?
+                WHERE submission_id = ? AND admin_id = ?
+            ''', (grade, comments, evaluation_time, submission_id, admin_id))
+            message = "평가가 성공적으로 수정되었습니다!"
+        else:
+            # 새 평가 추가
+            cursor.execute('''
+                INSERT INTO evaluations (submission_id, admin_id, grade, comments, evaluation_time)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (submission_id, admin_id, grade, comments, evaluation_time))
+            message = "평가가 성공적으로 저장되었습니다!"
+        
+        conn.commit()
+        conn.close()
+        
+        return True, message
+    except Exception as e:
+        return False, f"평가 저장 중 오류가 발생했습니다: {str(e)}"
+
+def get_evaluation(submission_id, admin_id):
+    """특정 제출물에 대한 평가를 조회합니다."""
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT grade, comments, evaluation_time
+        FROM evaluations 
+        WHERE submission_id = ? AND admin_id = ?
+    ''', (submission_id, admin_id))
+    
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result
+
+def get_submissions_with_evaluations():
+    """모든 제출물을 평가와 함께 조회합니다."""
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT 
+            s.submission_id,
+            s.student_id, 
+            st.name, 
+            s.original_filename, 
+            s.submission_time,
+            s.file_path,
+            e.grade,
+            e.comments,
+            e.evaluation_time
+        FROM submissions s
+        JOIN students st ON s.student_id = st.student_id
+        LEFT JOIN evaluations e ON s.submission_id = e.submission_id
+        ORDER BY s.submission_time DESC
+    ''')
+    
+    results = cursor.fetchall()
+    conn.close()
+    
+    return results
+
 def student_dashboard():
     """학생용 대시보드를 표시합니다."""
     st.header(f"환영합니다, {st.session_state.user_name}님! 👨‍🎓")
@@ -405,14 +512,24 @@ def student_dashboard():
     submissions = get_student_submissions(st.session_state.user_id)
     
     if submissions:
-        for idx, (submission_id, original_filename, submission_time, file_path) in enumerate(submissions):
+        for submission_data in submissions:
+            submission_id, original_filename, submission_time, file_path, grade, comments, eval_time, professor_name = submission_data
+            
+            # 제출물 정보 표시
             col1, col2, col3 = st.columns([3, 2, 1])
             
             with col1:
                 st.write(f"**{original_filename}**")
+                if grade:
+                    grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
+                    st.write(f"평가: {grade_color.get(grade, '⚪')} **{grade}점** (교수: {professor_name})")
+                else:
+                    st.write("📋 평가 대기중")
             
             with col2:
                 st.write(f"제출시간: {submission_time}")
+                if eval_time:
+                    st.write(f"평가시간: {eval_time}")
             
             with col3:
                 if st.button("🗑️ 삭제", key=f"delete_{submission_id}"):
@@ -422,6 +539,11 @@ def student_dashboard():
                         st.rerun()
                     else:
                         st.error(message)
+            
+            # 평가 코멘트 표시
+            if comments:
+                with st.expander(f"💬 교수님 피드백"):
+                    st.write(comments)
             
             st.markdown("---")
     else:
@@ -439,46 +561,133 @@ def admin_dashboard():
         # 제출 현황 대시보드
         st.subheader("📊 전체 제출 현황")
         
-        submissions = get_all_submissions()
+        submissions_with_eval = get_submissions_with_evaluations()
         
-        if submissions:
-            # DataFrame 생성
-            df = pd.DataFrame(submissions, columns=['학번', '이름', '파일명', '제출시간'])
-            
+        if submissions_with_eval:
             # 통계 정보 표시
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
+            
+            total_submissions = len(submissions_with_eval)
+            evaluated_count = len([s for s in submissions_with_eval if s[6] is not None])
+            unique_students = len(set([s[1] for s in submissions_with_eval]))
+            latest_submission = submissions_with_eval[0][4] if submissions_with_eval else "없음"
             
             with col1:
-                st.metric("총 제출 건수", len(submissions))
+                st.metric("총 제출 건수", total_submissions)
             
             with col2:
-                unique_students = df['학번'].nunique()
                 st.metric("제출한 학생 수", unique_students)
             
             with col3:
-                # 가장 최근 제출 시간
-                latest_submission = df['제출시간'].iloc[0] if len(df) > 0 else "없음"
+                st.metric("평가 완료", f"{evaluated_count}/{total_submissions}")
+            
+            with col4:
                 st.metric("최근 제출", latest_submission)
             
             st.markdown("---")
             
-            # 전체 제출 목록 표시
-            st.subheader("📝 상세 제출 목록")
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
-            )
+            # 상세 제출 목록 및 평가
+            st.subheader("📝 제출물 평가 및 관리")
             
-            # 학생별 제출 현황
-            st.markdown("---")
-            st.subheader("👥 학생별 제출 현황")
-            student_counts = df.groupby(['학번', '이름']).size().reset_index(name='제출 건수')
-            st.dataframe(
-                student_counts,
-                use_container_width=True,
-                hide_index=True
-            )
+            for submission_data in submissions_with_eval:
+                submission_id, student_id, name, filename, submit_time, file_path, grade, comments, eval_time = submission_data
+                
+                # 제출물 정보 표시
+                with st.container():
+                    col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
+                    
+                    with col1:
+                        st.write(f"**{name}** ({student_id})")
+                        st.write(f"📄 {filename}")
+                    
+                    with col2:
+                        st.write(f"제출시간: {submit_time}")
+                        if grade:
+                            grade_color = {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🟠", "F": "🔴"}
+                            st.write(f"평가: {grade_color.get(grade, '⚪')} **{grade}**")
+                    
+                    with col3:
+                        if st.button("👁️ 파일보기", key=f"view_file_{submission_id}"):
+                            success, content = read_file_content(file_path)
+                            if success:
+                                st.session_state[f"show_student_file_{submission_id}"] = content
+                                st.session_state[f"show_student_filename_{submission_id}"] = filename
+                            else:
+                                st.error(content)
+                    
+                    with col4:
+                        if st.button("📝 평가하기", key=f"evaluate_{submission_id}"):
+                            st.session_state[f"show_evaluation_{submission_id}"] = True
+                    
+                    # 파일 내용 표시
+                    if f"show_student_file_{submission_id}" in st.session_state:
+                        with st.expander(f"📄 {st.session_state[f'show_student_filename_{submission_id}']} 내용", expanded=True):
+                            st.text_area(
+                                "파일 내용:",
+                                st.session_state[f"show_student_file_{submission_id}"],
+                                height=400,
+                                key=f"student_content_{submission_id}"
+                            )
+                            if st.button("❌ 파일 닫기", key=f"close_file_{submission_id}"):
+                                del st.session_state[f"show_student_file_{submission_id}"]
+                                del st.session_state[f"show_student_filename_{submission_id}"]
+                                st.rerun()
+                    
+                    # 평가 입력 폼
+                    if f"show_evaluation_{submission_id}" in st.session_state:
+                        with st.expander(f"📝 {name} 학생 평가", expanded=True):
+                            # 기존 평가 정보 가져오기
+                            existing_eval = get_evaluation(submission_id, st.session_state.user_id)
+                            
+                            col_grade, col_save = st.columns([3, 1])
+                            
+                            with col_grade:
+                                # 성적 선택
+                                grade_options = ["A", "B", "C", "D", "F"]
+                                current_grade = existing_eval[0] if existing_eval else None
+                                default_index = grade_options.index(current_grade) if current_grade in grade_options else 0
+                                
+                                selected_grade = st.selectbox(
+                                    "성적 선택",
+                                    grade_options,
+                                    index=default_index,
+                                    key=f"grade_{submission_id}"
+                                )
+                                
+                                # 코멘트 입력
+                                current_comments = existing_eval[1] if existing_eval else ""
+                                evaluation_comments = st.text_area(
+                                    "평가 코멘트",
+                                    value=current_comments,
+                                    height=100,
+                                    placeholder="학생에게 전달할 피드백을 입력하세요...",
+                                    key=f"comments_{submission_id}"
+                                )
+                            
+                            # 저장 및 취소 버튼
+                            col_save_btn, col_cancel_btn = st.columns([1, 1])
+                            
+                            with col_save_btn:
+                                if st.button("💾 평가 저장", key=f"save_eval_{submission_id}", type="primary"):
+                                    success, message = save_evaluation(
+                                        submission_id, 
+                                        st.session_state.user_id, 
+                                        selected_grade, 
+                                        evaluation_comments
+                                    )
+                                    if success:
+                                        st.success(message)
+                                        del st.session_state[f"show_evaluation_{submission_id}"]
+                                        st.rerun()
+                                    else:
+                                        st.error(message)
+                            
+                            with col_cancel_btn:
+                                if st.button("❌ 취소", key=f"cancel_eval_{submission_id}"):
+                                    del st.session_state[f"show_evaluation_{submission_id}"]
+                                    st.rerun()
+                    
+                    st.markdown("---")
             
         else:
             st.info("아직 제출된 과제가 없습니다.")
