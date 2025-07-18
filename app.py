@@ -302,12 +302,20 @@ def student_dashboard():
         st.info(f"선택된 파일: {uploaded_file.name} ({uploaded_file.size} bytes)")
         
         if st.button("📤 제출하기", type="primary"):
-            success, message = save_submission(st.session_state.user_id, uploaded_file)
+            with st.spinner("과제를 제출하는 중..."):
+                success, message = save_submission(st.session_state.user_id, uploaded_file)
+            
             if success:
                 st.success(message)
+                st.balloons()  # 제출 성공 시 풍선 효과
+                st.info("과제가 성공적으로 제출되었습니다! 아래 제출 내역에서 확인하세요.")
+                # 2초 후 자동으로 새로고침
+                import time
+                time.sleep(2)
                 st.rerun()
             else:
                 st.error(message)
+                st.warning("과제 제출에 실패했습니다. 다시 시도해주세요.")
     
     # 제출 내역 섹션
     st.markdown("---")
@@ -425,12 +433,20 @@ def admin_dashboard():
             col1, col2 = st.columns([1, 4])
             with col1:
                 if st.button("📤 업로드", type="primary", key=f"upload_btn_{file_type}"):
-                    success, message = save_professor_file(st.session_state.user_id, uploaded_file, file_type)
+                    with st.spinner("파일을 업로드하는 중..."):
+                        success, message = save_professor_file(st.session_state.user_id, uploaded_file, file_type)
+                    
                     if success:
                         st.success(message)
+                        st.balloons()  # 업로드 성공 시 풍선 효과
+                        st.info("파일이 성공적으로 업로드되었습니다! '업로드된 파일' 탭에서 확인하세요.")
+                        # 2초 후 자동으로 새로고침
+                        import time
+                        time.sleep(2)
                         st.rerun()
                     else:
                         st.error(message)
+                        st.warning("업로드에 실패했습니다. 다시 시도해주세요.")
     
     with tab3:
         # 업로드된 파일 목록
