@@ -217,7 +217,12 @@ def student_dashboard():
     
     # 제출 내역 섹션
     st.markdown("---")
-    st.subheader("📋 제출 내역")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader("📋 제출 내역")
+    with col2:
+        if st.button("🔄 새로고침", key="refresh_submissions"):
+            st.rerun()
     
     submissions = get_student_submissions(st.session_state.user_id)
     
